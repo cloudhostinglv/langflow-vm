@@ -1,0 +1,98 @@
+# Langflow (visual builder for AI agents / RAG, with MCP) for a single-tenant per-client VM.
+# Backend LLM gateway: avots.ai (OpenAI-compatible). Each client uses their OWN avots key.
+#
+# Topology:
+#   caddy     -> public, terminates TLS for ${DOMAIN}, reverse-proxies to langflow:7860
+#   langflow  -> NOT published to the host's public interface; only reachable on the
+#                internal compose network (+ a loopback bind for local debugging).
+#
+# Pinned tag: see LANGFLOW_IMAGE below. Re-verify the tag before baking the golden image.
+# License: Langflow is MIT. Brand this to the client as "powered by Langflow".
+
+x-restart: &restart unless-stopped
+
+services:
+  langflow:
+    # PIN — re-verify before baking. As of 2026-06-05 newest stable is 1.9.6.
+    # AVOID the 1.6.0–1.6.3 range (regressions per upstream release notes); 1.9.6 is well clear of it.
+    image: langflowai/langflow:1.9.6
+    restart: *restart
+    env_file: .env
+    environment:
+      # --- Server bind (inside the container) ---
+      LANGFLOW_HOST: "0.0.0.0"
+      LANGFLOW_PORT: "7860"
+
+      # --- Persistent SQLite DB + config dir (lives on the named volume) ---
+      LANGFLOW_CONFIG_DIR: "/app/langflow"
+      LANGFLOW_DATABASE_URL: "sqlite:////app/langflow/langflow.db"
+
+      # --- Auth: no anonymous access. Superuser + secret come from .env ---
+      LANGFLOW_AUTO_LOGIN: "${LANGFLOW_AUTO_LOGIN}"
+      LANGFLOW_SUPERUSER: "${LANGFLOW_SUPERUSER}"
+      LANGFLOW_SUPERUSER_PASSWORD: "${LANGFLOW_SUPERUSER_PASSWORD}"
+      # Encrypts stored secrets/global variables + signs JWTs. MUST be stable per VM.
+      LANGFLOW_SECRET_KEY: "${LANGFLOW_SECRET_KEY}"
+
+      # --- avots wiring ---
+      # 1) Make the avots key a Credential-type global variable, sourced from the
+      #    container env (AVOTS_API_KEY below). See README for the #11119 caveat.
+      LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT: "${LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT}"
+      AVOTS_API_KEY: "${AVOTS_API_KEY}"
+      # 2) Point the OpenAI-compatible default at the avots gateway globally. The OpenAI
+      #    component's "OpenAI API Base" field can also be set per-component to this value.
+      OPENAI_API_BASE: "${OPENAI_API_BASE}"
+    volumes:
+      - langflow-data:/app/langflow
+    expose:
+      - "7860"
+    # Loopback-only host bind for local debugging on the VM (curl from the host).
+    # NOT a public bind: 127.0.0.1 is not reachable off-box. Public traffic goes via Caddy.
+    ports:
+      - "127.0.0.1:7860:7860"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+    healthcheck:
+      # Langflow exposes a health endpoint; if your pinned tag lacks /health_check use /health.
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7860/health_check').status==200 else 1)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: *restart
+    env_file: .env
+    environment:
+      DOMAIN: "${DOMAIN}"
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data   # ACME account + issued certs (must persist across restarts)
+      - caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - langflow
+    networks:
+      - edge
+
+# No docker.sock is mounted anywhere on purpose: a flow can run arbitrary Python,
+# so the host Docker socket must never be reachable from inside the stack.
+
+networks:
+  edge:
+    driver: bridge
+
+volumes:
+  langflow-data:
+  caddy-data:
+  caddy-config:

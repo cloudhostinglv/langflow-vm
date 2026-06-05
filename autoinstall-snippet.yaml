@@ -1,0 +1,36 @@
+# cloud-init drop-in for provisioning Langflow on a per-client single-tenant VM.
+#
+# This is a SNIPPET to merge into the VM's cloud-init user-data. It assumes the golden
+# image already has: Docker + compose plugin installed, and this repo's langflow/ dir
+# present at /srv/avots-vm/langflow (docker-compose.yml, Caddyfile, first-boot.sh).
+#
+# {placeholder} tokens are substituted by the provisioning pipeline at provision time
+# (same templating as the rest of the autoinstall): {domain}, {avots_key},
+# {langflow_admin_user}, {admin_password}, {langflow_secret_key}.
+#
+# Generate per-VM secrets in the pipeline BEFORE substitution, e.g.:
+#   {admin_password}      = openssl rand -base64 24 | tr -d '\n'
+#   {langflow_secret_key} = openssl rand -base64 48 | tr -d '\n'
+
+write_files:
+  # The per-client .env. Gitignored counterpart of .env.example; never baked into the image.
+  - path: /srv/avots-vm/langflow/.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      DOMAIN={domain}
+
+      AVOTS_API_KEY={avots_key}
+      OPENAI_API_BASE=https://api.avots.ai/openai/v1
+      LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT=AVOTS_API_KEY
+
+      LANGFLOW_AUTO_LOGIN=False
+      LANGFLOW_SUPERUSER={langflow_admin_user}
+      LANGFLOW_SUPERUSER_PASSWORD={admin_password}
+      LANGFLOW_SECRET_KEY={langflow_secret_key}
+
+runcmd:
+  # Bring the stack up and run the idempotent first-boot (login materializes the
+  # env-sourced global variables — upstream issue #11119).
+  - [ bash, -lc, "cd /srv/avots-vm/langflow && docker compose pull && docker compose up -d" ]
+  - [ bash, -lc, "cd /srv/avots-vm/langflow && ./first-boot.sh 2>&1 | tee /var/log/langflow-first-boot.log" ]

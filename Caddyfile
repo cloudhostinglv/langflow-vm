@@ -1,0 +1,32 @@
+# Caddy reverse proxy for Langflow, with automatic HTTPS for the client's domain.
+#
+# {$DOMAIN} is read from the environment (set in .env, passed through by docker-compose).
+# Because a real hostname is used (not a bare :80/:443 block), Caddy will automatically
+# obtain and renew a Let's Encrypt certificate for it. The VM must be reachable on 80/443
+# from the internet and DNS for {$DOMAIN} must point at this VM before TLS can be issued.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Langflow's web UI + API. Service name "langflow" resolves on the compose network.
+	reverse_proxy langflow:7860 {
+		# Long timeouts: builder runs/streams can be slow.
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+		}
+	}
+
+	# Baseline security headers. Keep HSTS modest until you're sure TLS is stable.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
