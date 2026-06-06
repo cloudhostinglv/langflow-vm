@@ -1,14 +1,24 @@
-# Caddy reverse proxy for Langflow, with automatic HTTPS for the client's domain.
+# Caddy terminates TLS for ${PANEL_DOMAIN} and serves TWO surfaces on the SAME
+# hostname under ONE auto Let's Encrypt cert (CONVENTION across all products):
 #
-# {$DOMAIN} is read from the environment (set in .env, passed through by docker-compose).
-# Because a real hostname is used (not a bare :80/:443 block), Caddy will automatically
-# obtain and renew a Let's Encrypt certificate for it. The VM must be reachable on 80/443
-# from the internet and DNS for {$DOMAIN} must point at this VM before TLS can be issued.
+#   :443  -> the Langflow builder UI/API       (langflow:7860)  <- "Open Langflow"
+#   :8443 -> the branded CloudHosting AI Panel (panel:8080)     <- panel is ALWAYS :8443
+#
+# Langflow is a BUILDER: the client configures the provider inside Langflow's own UI
+# (login: admin / PANEL_PASSWORD). The panel (:8443) is a login-gated landing that
+# links into Langflow via "Open Langflow" (-> https://${PANEL_DOMAIN}, i.e. :443).
+#
+# PANEL_DOMAIN is injected from the environment. Needs an A-record for ${PANEL_DOMAIN}
+# -> this VM and ports 80 + 443 + 8443 reachable.
 
-{$DOMAIN} {
+{
+	email admin@cloudhosting.lv
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory   # uncomment while testing
+}
+
+# --- :443 — the Langflow product UI/API ------------------------------------ #
+{$PANEL_DOMAIN}:443 {
 	encode zstd gzip
-
-	# Langflow's web UI + API. Service name "langflow" resolves on the compose network.
 	reverse_proxy langflow:7860 {
 		# Long timeouts: builder runs/streams can be slow.
 		transport http {
@@ -16,15 +26,37 @@
 			write_timeout 600s
 		}
 	}
-
-	# Baseline security headers. Keep HSTS modest until you're sure TLS is stable.
 	header {
-		Strict-Transport-Security "max-age=31536000"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 	}
+	log {
+		output stdout
+		format console
+	}
+}
 
+# --- :8443 — the branded CloudHosting AI Panel ----------------------------- #
+{$PANEL_DOMAIN}:8443 {
+	encode zstd gzip
+	reverse_proxy panel:8080 {
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 30s
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+	request_body {
+		max_size 256KB
+	}
 	log {
 		output stdout
 		format console

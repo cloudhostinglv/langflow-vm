@@ -1,0 +1,18 @@
+# First-boot provisioning oneshot for the Langflow per-client VM.
+# Installed + enabled by autoinstall-snippet.yaml. Runs firstboot.sh ONCE after docker
+# + networking are up: generates LANGFLOW_SECRET_KEY, derives PANEL_DOMAIN, pulls +
+# starts the stack (langflow + panel + caddy), then disables itself.
+
+[Unit]
+Description=Langflow VM first-boot provisioning (product + panel + TLS)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+ConditionPathExists=/opt/langflow-vm/firstboot.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/langflow-vm/firstboot.sh
+
+[Install]
+WantedBy=multi-user.target
